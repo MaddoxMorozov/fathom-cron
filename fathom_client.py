@@ -23,19 +23,19 @@ class FathomClient:
 
     def _throttle(self):
         """
-        Enforce rate limit: max 55 requests per 60s window (5-req safety margin).
+        Enforce rate limit: max 50 requests per 60s window (10-req safety margin).
         If we're close to the limit, sleep until the oldest request expires.
         """
         now = time.time()
         window = 60.0
-        max_requests = 55  # safety margin below the 60 hard limit
+        max_requests = 50  # generous safety margin below the 60 hard limit
 
         # Prune requests older than the window
         self._request_times = [t for t in self._request_times if now - t < window]
 
         if len(self._request_times) >= max_requests:
             oldest = self._request_times[0]
-            sleep_for = window - (now - oldest) + 1.0  # +1s safety
+            sleep_for = window - (now - oldest) + 2.0  # +2s safety
             if sleep_for > 0:
                 logger.info(f"Rate limit throttle: sleeping {sleep_for:.1f}s")
                 time.sleep(sleep_for)
@@ -50,9 +50,31 @@ class FathomClient:
         wait=wait_exponential(multiplier=2, min=5, max=30),
         retry=retry_if_exception_type(requests.RequestException),
     )
+    def _fetch_page(self, params: dict) -> dict:
+        """
+        Fetch a single page of meetings. Retry is per-page, not per-full-pagination.
+        Handles 429 rate limit responses by sleeping before retry.
+        """
+        self._throttle()
+        response = requests.get(
+            f"{self.base_url}/meetings",
+            headers=self.headers,
+            params=params,
+        )
+
+        # If we hit a 429, sleep 60s before tenacity retries
+        if response.status_code == 429:
+            logger.warning("Hit 429 rate limit. Sleeping 65s before retry...")
+            time.sleep(65)
+            response.raise_for_status()
+
+        response.raise_for_status()
+        return response.json()
+
     def list_meetings(self, limit: int = 100) -> list:
         """
         Fetch all meetings with cursor-based pagination.
+        Retry logic is on each individual page fetch (not the whole loop).
         """
         all_meetings = []
         cursor = None
@@ -67,16 +89,14 @@ class FathomClient:
                 params["cursor"] = cursor
 
             page += 1
-            logger.info(f"Fetching meetings page {page} (cursor={cursor})")
+            logger.info(f"Fetching meetings page {page} (cursor={'...' + cursor[-20:] if cursor else 'None'})")
 
-            self._throttle()
-            response = requests.get(
-                f"{self.base_url}/meetings",
-                headers=self.headers,
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
+            try:
+                data = self._fetch_page(params)
+            except Exception as e:
+                logger.error(f"Failed to fetch page {page} after retries: {e}")
+                logger.info(f"Returning {len(all_meetings)} meetings fetched so far from {page - 1} pages")
+                break
 
             if isinstance(data, list):
                 meetings = data
@@ -116,6 +136,13 @@ class FathomClient:
 
         self._throttle()
         response = requests.get(url, headers=self.headers)
+
+        # Handle 429 explicitly
+        if response.status_code == 429:
+            logger.warning(f"Hit 429 on transcript {recording_id}. Sleeping 65s before retry...")
+            time.sleep(65)
+            response.raise_for_status()
+
         response.raise_for_status()
         return response.json()
 
