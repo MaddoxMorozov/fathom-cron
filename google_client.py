@@ -1,6 +1,7 @@
 import os
 import io
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -27,48 +28,55 @@ class GoogleClient:
 
     def _ensure_initialized(self):
         """
-        Lazy init with OAuth2 user credentials.
-        - First run: opens browser for Google login, saves token.json
-        - Subsequent runs: loads token.json, auto-refreshes if expired
+        Initialize Google credentials.
+        Priority:
+        1. Service Account (if GOOGLE_SERVICE_ACCOUNT_FILE is set and valid)
+        2. OAuth2 User Credentials (token.json or interactive flow)
         """
         if self._credentials is not None and self._credentials.valid:
             return
 
         creds = None
 
-        # Load saved token if it exists
-        if os.path.exists(_TOKEN_PATH):
-            creds = Credentials.from_authorized_user_file(_TOKEN_PATH, SCOPES)
+        # 1. Try Service Account
+        sa_path = settings.resolve_service_account_path()
+        if os.path.exists(sa_path):
+            try:
+                logger.info(f"Loading Service Account credentials from: {sa_path}")
+                creds = service_account.Credentials.from_service_account_file(
+                    sa_path, scopes=SCOPES
+                )
+            except Exception as e:
+                logger.error(f"Failed to load service account: {e}")
 
-        # If no valid credentials, refresh or run the interactive browser flow
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                logger.info("Refreshing expired Google OAuth token...")
-                creds.refresh(Request())
-            else:
-                if not os.path.exists(_CREDENTIALS_PATH):
-                    raise FileNotFoundError(
-                        f"OAuth credentials file not found at: {_CREDENTIALS_PATH}\n"
-                        f"Download it from Google Cloud Console:\n"
-                        f"  1. Go to https://console.cloud.google.com/apis/credentials\n"
-                        f"  2. Create Credentials > OAuth client ID > Desktop app\n"
-                        f"  3. Download JSON and save as: {_CREDENTIALS_PATH}"
-                    )
-                logger.info("No saved token found. Opening browser for Google authorization...")
+        # 2. Try User Credentials (token.json)
+        if not creds and os.path.exists(_TOKEN_PATH):
+            try:
+                creds = Credentials.from_authorized_user_file(_TOKEN_PATH, SCOPES)
+            except Exception as e:
+                logger.warning(f"Failed to load token.json: {e}")
+
+        # 3. Interactive Flow (Local only provided credentials.json exists)
+        if not creds:
+            if os.path.exists(_CREDENTIALS_PATH):
+                logger.info("No service account or token found. Starting interactive flow...")
                 flow = InstalledAppFlow.from_client_secrets_file(
                     _CREDENTIALS_PATH, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-
-            # Save the token for future runs
-            with open(_TOKEN_PATH, "w") as token_file:
-                token_file.write(creds.to_json())
-            logger.info(f"Google OAuth token saved to {_TOKEN_PATH}")
+                # Save the token
+                with open(_TOKEN_PATH, "w") as token_file:
+                    token_file.write(creds.to_json())
+            else:
+                # If we are here, we have no valid creds and no means to get them
+                msg = "No valid Google credentials found (Service Account or OAuth)."
+                logger.error(msg)
+                raise RuntimeError(msg)
 
         self._credentials = creds
         self._drive_service = build("drive", "v3", credentials=self._credentials)
         self._sheets_service = build("sheets", "v4", credentials=self._credentials)
-        logger.info("Google client initialized (OAuth2 user credentials)")
+        logger.info("Google client initialized successfully.")
 
     def upload_transcript_to_drive(
         self, filename: str, content: str, folder_id: str | None = None
