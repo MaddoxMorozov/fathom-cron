@@ -29,49 +29,72 @@ class GoogleClient:
     def _ensure_initialized(self):
         """
         Initialize Google credentials.
-        Priority:
-        1. Service Account (if GOOGLE_SERVICE_ACCOUNT_FILE is set and valid)
-        2. OAuth2 User Credentials (token.json or interactive flow)
+        Priority (OAuth2 FIRST — service accounts can't upload to Drive):
+        1. OAuth2 User Credentials (token.json — works for Drive + Sheets)
+        2. Interactive OAuth flow (credentials.json — first-time local setup)
+        3. Service Account (ONLY if no OAuth available — Sheets only, Drive will fail)
         """
         if self._credentials is not None and self._credentials.valid:
             return
 
         creds = None
 
-        # 1. Try Service Account
-        sa_path = settings.resolve_service_account_path()
-        if os.path.exists(sa_path):
-            try:
-                logger.info(f"Loading Service Account credentials from: {sa_path}")
-                creds = service_account.Credentials.from_service_account_file(
-                    sa_path, scopes=SCOPES
-                )
-            except Exception as e:
-                logger.error(f"Failed to load service account: {e}")
-
-        # 2. Try User Credentials (token.json)
-        if not creds and os.path.exists(_TOKEN_PATH):
+        # 1. Try OAuth2 token.json first (works for both Drive and Sheets)
+        if os.path.exists(_TOKEN_PATH):
             try:
                 creds = Credentials.from_authorized_user_file(_TOKEN_PATH, SCOPES)
+                if creds and creds.expired and creds.refresh_token:
+                    logger.info("Refreshing expired OAuth token...")
+                    creds.refresh(Request())
+                    # Save refreshed token
+                    with open(_TOKEN_PATH, "w") as f:
+                        f.write(creds.to_json())
+                if creds and creds.valid:
+                    logger.info("Loaded OAuth2 user credentials from token.json")
             except Exception as e:
-                logger.warning(f"Failed to load token.json: {e}")
+                logger.warning(f"Failed to load/refresh token.json: {e}")
+                creds = None
 
-        # 3. Interactive Flow (Local only provided credentials.json exists)
-        if not creds:
-            if os.path.exists(_CREDENTIALS_PATH):
-                logger.info("No service account or token found. Starting interactive flow...")
+        # 2. Try interactive OAuth flow (local machine with browser)
+        if not creds and os.path.exists(_CREDENTIALS_PATH):
+            try:
+                logger.info("Starting interactive OAuth flow (browser)...")
                 flow = InstalledAppFlow.from_client_secrets_file(
                     _CREDENTIALS_PATH, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-                # Save the token
-                with open(_TOKEN_PATH, "w") as token_file:
-                    token_file.write(creds.to_json())
-            else:
-                # If we are here, we have no valid creds and no means to get them
-                msg = "No valid Google credentials found (Service Account or OAuth)."
-                logger.error(msg)
-                raise RuntimeError(msg)
+                with open(_TOKEN_PATH, "w") as f:
+                    f.write(creds.to_json())
+                logger.info(f"OAuth token saved to {_TOKEN_PATH}")
+            except Exception as e:
+                logger.warning(f"Interactive OAuth flow failed: {e}")
+                creds = None
+
+        # 3. Fallback: Service Account (Sheets works, Drive uploads will fail)
+        if not creds:
+            sa_path = settings.resolve_service_account_path()
+            if os.path.exists(sa_path):
+                try:
+                    logger.warning(
+                        "Using Service Account — Drive uploads will fail (no storage quota). "
+                        "Generate token.json locally and deploy it for full functionality."
+                    )
+                    creds = service_account.Credentials.from_service_account_file(
+                        sa_path, scopes=SCOPES
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load service account: {e}")
+
+        if not creds:
+            msg = (
+                "No valid Google credentials found.\n"
+                "Options:\n"
+                "  1. Run locally with credentials.json to generate token.json\n"
+                "  2. Copy token.json to the deployment\n"
+                "  3. Place service_account.json (Sheets only, no Drive uploads)"
+            )
+            logger.error(msg)
+            raise RuntimeError(msg)
 
         self._credentials = creds
         self._drive_service = build("drive", "v3", credentials=self._credentials)

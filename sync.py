@@ -110,18 +110,19 @@ def run_sync():
         f"{state_manager.get_processed_count()} already processed"
     )
 
-    for meeting in meetings:
+    # Count how many are new before processing
+    new_meetings = [
+        m for m in meetings
+        if str(m.get("recording_id", ""))
+        and not state_manager.is_processed(str(m.get("recording_id", "")))
+    ]
+    stats["skipped"] = len(meetings) - len(new_meetings)
+    logger.info(f"{len(new_meetings)} new meetings to process, {stats['skipped']} already done")
+
+    for idx, meeting in enumerate(new_meetings, 1):
         recording_id = str(meeting.get("recording_id", ""))
-        if not recording_id:
-            logger.warning(f"Meeting has no recording_id, skipping: {meeting.get('title')}")
-            continue
-
-        if state_manager.is_processed(recording_id):
-            stats["skipped"] += 1
-            continue
-
         title = meeting.get("title") or meeting.get("meeting_title") or "Untitled Meeting"
-        logger.info(f"Processing: '{title}' (recording_id={recording_id})")
+        logger.info(f"[{idx}/{len(new_meetings)}] Processing: '{title}' (recording_id={recording_id})")
 
         try:
             # Fetch transcript — handle HTTP errors for old/unavailable recordings
@@ -194,9 +195,6 @@ def run_sync():
 
             stats["new"] += 1
             logger.info(f"Synced '{title}' -> {drive_link}")
-
-            # Brief pause to respect rate limits
-            time.sleep(0.5)
 
         except Exception as e:
             logger.error(f"Error processing '{title}' ({recording_id}): {e}")
