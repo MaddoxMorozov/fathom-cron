@@ -23,27 +23,19 @@ class FathomClient:
 
     def _throttle(self):
         """
-        Enforce rate limit: max 50 requests per 60s window (10-req safety margin).
-        If we're close to the limit, sleep until the oldest request expires.
+        Simple fixed-delay throttle: wait at least 3 seconds between requests.
+        Fathom's actual rate limit appears to be ~20-25 req/60s (stricter than
+        the documented 60/60s). 3s spacing = max 20 req/60s, well within limits.
         """
-        now = time.time()
-        window = 60.0
-        max_requests = 50  # generous safety margin below the 60 hard limit
-
-        # Prune requests older than the window
-        self._request_times = [t for t in self._request_times if now - t < window]
-
-        if len(self._request_times) >= max_requests:
-            oldest = self._request_times[0]
-            sleep_for = window - (now - oldest) + 2.0  # +2s safety
-            if sleep_for > 0:
-                logger.info(f"Rate limit throttle: sleeping {sleep_for:.1f}s")
+        if self._request_times:
+            elapsed = time.time() - self._request_times[-1]
+            if elapsed < 3.0:
+                sleep_for = 3.0 - elapsed
                 time.sleep(sleep_for)
-                # Prune again after sleeping
-                now = time.time()
-                self._request_times = [t for t in self._request_times if now - t < window]
-
         self._request_times.append(time.time())
+        # Keep list small — only need the last timestamp
+        if len(self._request_times) > 10:
+            self._request_times = self._request_times[-5:]
 
     @retry(
         stop=stop_after_attempt(3),
