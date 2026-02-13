@@ -1,0 +1,11 @@
+requests
+tenacity
+apscheduler
+pydantic
+pydantic-settings
+python-dotenv
+colorlog
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
