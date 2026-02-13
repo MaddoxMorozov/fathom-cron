@@ -1,5 +1,7 @@
 import time
+import requests
 from datetime import datetime
+from tenacity import RetryError
 from fathom_client import fathom_client
 from google_client import google_client
 from state import state_manager
@@ -122,8 +124,33 @@ def run_sync():
         logger.info(f"Processing: '{title}' (recording_id={recording_id})")
 
         try:
-            # Fetch transcript
-            transcript_data = fathom_client.get_transcript(recording_id)
+            # Fetch transcript — handle HTTP errors for old/unavailable recordings
+            try:
+                transcript_data = fathom_client.get_transcript(recording_id)
+            except RetryError:
+                logger.warning(
+                    f"Transcript unavailable for '{title}' ({recording_id}). "
+                    f"Skipping — recording may be too old or deleted."
+                )
+                # Mark as processed so we don't retry forever
+                state_manager.mark_processed(
+                    recording_id,
+                    drive_file_id="N/A",
+                    synced_at=datetime.now().isoformat(),
+                )
+                stats["errors"] += 1
+                continue
+            except requests.HTTPError as e:
+                logger.warning(
+                    f"HTTP {e.response.status_code} for transcript '{title}' ({recording_id}). Skipping."
+                )
+                state_manager.mark_processed(
+                    recording_id,
+                    drive_file_id="N/A",
+                    synced_at=datetime.now().isoformat(),
+                )
+                stats["errors"] += 1
+                continue
 
             has_content = (
                 transcript_data
@@ -133,7 +160,7 @@ def run_sync():
             if not has_content:
                 logger.warning(
                     f"No transcript content for '{title}' ({recording_id}). "
-                    f"Skipping -- may not be ready yet."
+                    f"Skipping — may not be ready yet."
                 )
                 stats["errors"] += 1
                 continue
