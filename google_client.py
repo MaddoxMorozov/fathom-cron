@@ -16,8 +16,21 @@ SCOPES = [
 
 # Paths relative to this script's directory
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_TOKEN_PATH = os.path.join(_BASE_DIR, "token.json")
 _CREDENTIALS_PATH = os.path.join(_BASE_DIR, "credentials.json")
+
+# Token search paths: local first, then Render secret file location
+_TOKEN_SEARCH_PATHS = [
+    os.path.join(_BASE_DIR, "token.json"),
+    "/etc/secrets/token.json",
+]
+
+
+def _find_token_path() -> str | None:
+    """Return the first existing token.json path, or None."""
+    for p in _TOKEN_SEARCH_PATHS:
+        if os.path.exists(p):
+            return p
+    return None
 
 
 class GoogleClient:
@@ -38,19 +51,24 @@ class GoogleClient:
             return
 
         creds = None
+        token_path = _find_token_path()
 
         # 1. Try OAuth2 token.json first (works for both Drive and Sheets)
-        if os.path.exists(_TOKEN_PATH):
+        if token_path:
             try:
-                creds = Credentials.from_authorized_user_file(_TOKEN_PATH, SCOPES)
+                logger.info(f"Loading OAuth2 token from: {token_path}")
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
                 if creds and creds.expired and creds.refresh_token:
                     logger.info("Refreshing expired OAuth token...")
                     creds.refresh(Request())
-                    # Save refreshed token
-                    with open(_TOKEN_PATH, "w") as f:
-                        f.write(creds.to_json())
+                    # Save refreshed token (only if writable — Render /etc/secrets is read-only)
+                    try:
+                        with open(token_path, "w") as f:
+                            f.write(creds.to_json())
+                    except OSError:
+                        logger.info("Token path is read-only, skipping save (normal on Render)")
                 if creds and creds.valid:
-                    logger.info("Loaded OAuth2 user credentials from token.json")
+                    logger.info("Loaded OAuth2 user credentials successfully")
             except Exception as e:
                 logger.warning(f"Failed to load/refresh token.json: {e}")
                 creds = None
@@ -63,9 +81,10 @@ class GoogleClient:
                     _CREDENTIALS_PATH, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-                with open(_TOKEN_PATH, "w") as f:
+                local_token = os.path.join(_BASE_DIR, "token.json")
+                with open(local_token, "w") as f:
                     f.write(creds.to_json())
-                logger.info(f"OAuth token saved to {_TOKEN_PATH}")
+                logger.info(f"OAuth token saved to {local_token}")
             except Exception as e:
                 logger.warning(f"Interactive OAuth flow failed: {e}")
                 creds = None
