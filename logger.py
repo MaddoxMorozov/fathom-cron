@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 from logging.handlers import RotatingFileHandler
 import colorlog
@@ -14,8 +15,8 @@ def setup_logging(name="fathom_sync"):
     if log.handlers:
         return log
 
-    # Console handler (colored)
-    console = logging.StreamHandler()
+    # Console handler (colored) — force stderr for immediate output
+    console = logging.StreamHandler(sys.stderr)
     console.setLevel(logging.INFO)
     console.setFormatter(colorlog.ColoredFormatter(
         "%(log_color)s%(asctime)s - %(levelname)s - %(message)s",
